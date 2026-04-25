@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test de Webhooks - Sanaladas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 min-h-screen p-8">
+    <div class="max-w-4xl mx-auto">
+        <div class="bg-white rounded-2xl shadow-lg p-8 mb-6">
+            <h1 class="text-3xl font-bold text-slate-900 mb-2">🔧 Test de Webhooks</h1>
+            <p class="text-slate-600">Herramienta de diagnóstico para probar webhooks de pedidos</p>
+        </div>
+
+        <!-- Test PDF Upload a Netlify -->
+        <div class="bg-white rounded-2xl shadow-lg p-8 mb-6">
+            <h2 class="text-2xl font-bold text-slate-900 mb-4">📤 Test 1: Subir PDF a Netlify</h2>
+            <p class="text-slate-600 mb-4">Este endpoint envía el PDF a N8N y espera JSON de vuelta</p>
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-slate-700 mb-2">Selecciona un PDF:</label>
+                <input type="file" id="pdfFile" accept="application/pdf"
+                    class="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+            </div>
+
+            <button onclick="testPdfUpload()"
+                class="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors font-medium">
+                Enviar PDF a /api/pdf-proxy
+            </button>
+
+            <div id="pdfResult" class="mt-4"></div>
+        </div>
+
+        <!-- Test JSON a Netlify -->
+        <div class="bg-white rounded-2xl shadow-lg p-8 mb-6">
+            <h2 class="text-2xl font-bold text-slate-900 mb-4">📨 Test 2: Enviar JSON a Netlify</h2>
+            <p class="text-slate-600 mb-4">Este endpoint recibe JSON directamente y lo guarda</p>
+
+            <button onclick="testJsonToNetlify()"
+                class="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition-colors font-medium">
+                Enviar JSON a /api/receive-order
+            </button>
+
+            <div id="jsonNetlifyResult" class="mt-4"></div>
+        </div>
+
+        <!-- Test JSON a Supabase Edge Function -->
+        <div class="bg-white rounded-2xl shadow-lg p-8 mb-6">
+            <h2 class="text-2xl font-bold text-slate-900 mb-4">🚀 Test 3: Enviar JSON a Supabase</h2>
+            <p class="text-slate-600 mb-4">Edge Function de Supabase (el recomendado en docs)</p>
+
+            <button onclick="testJsonToSupabase()"
+                class="bg-purple-600 text-white px-6 py-3 rounded-lg hover:bg-purple-700 transition-colors font-medium">
+                Enviar JSON a Supabase Edge Function
+            </button>
+
+            <div id="jsonSupabaseResult" class="mt-4"></div>
+        </div>
+
+        <!-- Logs Recientes -->
+        <div class="bg-white rounded-2xl shadow-lg p-8">
+            <h2 class="text-2xl font-bold text-slate-900 mb-4">📋 Logs Recientes</h2>
+            <button onclick="fetchRecentLogs()"
+                class="bg-slate-600 text-white px-6 py-3 rounded-lg hover:bg-slate-700 transition-colors font-medium mb-4">
+                Cargar Logs
+            </button>
+            <div id="logsResult" class="mt-4"></div>
+        </div>
+    </div>
+
+    <script>
+        const sampleData = {
+            "client_details": {
+                "company_name": "Empresa Test S.L.",
+                "contact_person": "Juan Prueba",
+                "address": "Calle Test 123, Madrid",
+                "phone_number": "912345678"
+            },
+            "order_information": {
+                "event_date": "2025-10-30",
+                "number_of_attendees": "50",
+                "sales_representative": "María Test",
+                "meal_times": {
+                    "breakfast": null,
+                    "lunch": {
+                        "preparation_time": "12:00",
+                        "travel_time": "30 min",
+                        "delivery_time": "13:00",
+                        "delivery_responsible": "nosotros"
+                    },
+                    "dinner": null
+                }
+            },
+            "packaging_and_tableware": {
+                "tableware_details": [
+                    {
+                        "item_name": "Platos",
+                        "quantity": "50"
+                    }
+                ]
+            },
+            "product_details": [
+                {
+                    "Categoria": "Sandwiches",
+                    "product_name": "Bocadillo de jamón",
+                    "quantity": "25",
+                    "format": "Medio",
+                    "size": "15cm"
+                }
+            ]
+        };
+
+        function showResult(elementId, title, content, isError = false) {
+            const el = document.getElementById(elementId);
+            const colorClass = isError ? 'bg-red-50 border-red-200 text-red-800' : 'bg-green-50 border-green-200 text-green-800';
+            el.innerHTML = `
+                <div class="${colorClass} border rounded-lg p-4">
+                    <h3 class="font-bold mb-2">${isError ? '❌' : '✅'} ${title}</h3>
+                    <pre class="text-sm overflow-auto">${JSON.stringify(content, null, 2)}</pre>
+                </div>
+            `;
+        }
+
+        async function testPdfUpload() {
+            const fileInput = document.getElementById('pdfFile');
+            if (!fileInput.files.length) {
+                alert('Por favor selecciona un PDF primero');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+
+            try {
+                showResult('pdfResult', 'Enviando...', { status: 'uploading' });
+
+                const response = await fetch('/api/pdf-proxy', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+                showResult('pdfResult', 'Respuesta recibida', result, !response.ok);
+            } catch (error) {
+                showResult('pdfResult', 'Error', { error: error.message }, true);
+            }
+        }
+
+        async function testJsonToNetlify() {
+            try {
+                showResult('jsonNetlifyResult', 'Enviando...', { status: 'sending' });
+
+                const response = await fetch('/api/receive-order', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        fileName: `Test-Pedido-${Date.now()}.pdf`,
+                        clientName: "Empresa Test S.L.",
+                        clientId: "empresa-test-sl",
+                        extractedData: sampleData
+                    })
+                });
+
+                const result = await response.json();
+                showResult('jsonNetlifyResult', 'Respuesta recibida', result, !response.ok);
+            } catch (error) {
+                showResult('jsonNetlifyResult', 'Error', { error: error.message }, true);
+            }
+        }
+
+        async function testJsonToSupabase() {
+            try {
+                showResult('jsonSupabaseResult', 'Enviando...', { status: 'sending' });
+
+                const response = await fetch('https://wfbdxxpegggmbvfoteml.supabase.co/functions/v1/receive-order', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndmYmR4eHBlZ2dnbWJ2Zm90ZW1sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc0OTgwMTQsImV4cCI6MjA3MzA3NDAxNH0.DjJNPiAz6O7Qhpvs8MKmj4uMs_6QXVSRtepfgc_a9y4'
+                    },
+                    body: JSON.stringify({
+                        fileName: `Test-Pedido-${Date.now()}.pdf`,
+                        extractedData: sampleData
+                    })
+                });
+
+                const result = await response.json();
+                showResult('jsonSupabaseResult', 'Respuesta recibida', result, !response.ok);
+            } catch (error) {
+                showResult('jsonSupabaseResult', 'Error', { error: error.message }, true);
+            }
+        }
+
+        async function fetchRecentLogs() {
+            try {
+                showResult('logsResult', 'Cargando logs...', { status: 'loading' });
+
+                // Esta es una petición a tu backend que debe consultar Supabase
+                const response = await fetch('/api/receive-order', {
+                    method: 'GET'
+                });
+
+                const result = await response.json();
+                showResult('logsResult', 'Variables de Entorno', result, !response.ok);
+            } catch (error) {
+                showResult('logsResult', 'Error', { error: error.message }, true);
+            }
+        }
+    </script>
+</body>
+</html>

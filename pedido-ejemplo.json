@@ -1,0 +1,68 @@
+{
+  "fileName": "Pedido_EmpresaEjemplo_01Enero",
+  "extractedData": {
+    "client_details": {
+      "company_name": "Empresa Ejemplo S.L.",
+      "contact_person": "Juan Pérez",
+      "address": "Calle Mayor 123, 28001 Madrid",
+      "phone_number": "912345678"
+    },
+    "order_information": {
+      "event_date": "1 enero",
+      "number_of_attendees": "50",
+      "sales_representative": "María García",
+      "meal_times": {
+        "breakfast": {
+          "preparation_time": "08:00",
+          "travel_time": "30 min",
+          "delivery_time": "09:00",
+          "delivery_responsible": "nosotros"
+        },
+        "lunch": {
+          "preparation_time": "12:00",
+          "travel_time": "45 min",
+          "delivery_time": "13:30",
+          "delivery_responsible": "cliente"
+        },
+        "dinner": null
+      }
+    },
+    "product_details": [
+      {
+        "Categoria": "Sandwiches",
+        "product_name": "Bocadillo de jamón ibérico",
+        "quantity": "25",
+        "format": "Medio bocadillo",
+        "size": "15cm"
+      },
+      {
+        "Categoria": "Wrap bites",
+        "product_name": "Wrap de pollo",
+        "quantity": "30",
+        "format": null,
+        "size": null
+      },
+      {
+        "Categoria": "Bebida",
+        "product_name": "Agua mineral 1.5L",
+        "quantity": "10",
+        "format": "Botella",
+        "size": "1.5L"
+      },
+      {
+        "Categoria": "Dessert",
+        "product_name": "Tarta de chocolate",
+        "quantity": "2",
+        "format": "Entera",
+        "size": "8 porciones"
+      },
+      {
+        "Categoria": "Bakery",
+        "product_name": "Croissanes variados",
+        "quantity": "20",
+        "format": "Mini",
+        "size": null
+      }
+    ]
+  }
+}

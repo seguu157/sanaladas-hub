@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Visor de Pedidos - Sanaladas</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    .header {
+      background: white;
+      padding: 30px;
+      border-radius: 16px;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+      margin-bottom: 30px;
+      text-align: center;
+    }
+
+    h1 {
+      color: #333;
+      font-size: 2.5rem;
+      margin-bottom: 10px;
+    }
+
+    .webhook-url {
+      background: #f8f9fa;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 20px;
+      font-family: monospace;
+      font-size: 14px;
+      color: #495057;
+      word-break: break-all;
+      border: 2px dashed #667eea;
+    }
+
+    .orders-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+      gap: 20px;
+    }
+
+    .order-card {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .order-card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
+    }
+
+    .order-header {
+      border-bottom: 2px solid #667eea;
+      padding-bottom: 15px;
+      margin-bottom: 15px;
+    }
+
+    .order-title {
+      font-size: 1.3rem;
+      color: #667eea;
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+
+    .order-date {
+      color: #6c757d;
+      font-size: 0.9rem;
+    }
+
+    .order-info {
+      margin-bottom: 15px;
+    }
+
+    .info-row {
+      display: flex;
+      margin-bottom: 8px;
+      font-size: 0.95rem;
+    }
+
+    .info-label {
+      font-weight: 600;
+      color: #495057;
+      min-width: 140px;
+    }
+
+    .info-value {
+      color: #6c757d;
+      flex: 1;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 15px;
+      padding-top: 15px;
+      border-top: 1px solid #e9ecef;
+    }
+
+    .stat {
+      text-align: center;
+      padding: 10px;
+      background: #f8f9fa;
+      border-radius: 8px;
+    }
+
+    .stat-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #667eea;
+    }
+
+    .stat-label {
+      font-size: 0.8rem;
+      color: #6c757d;
+      text-transform: uppercase;
+      margin-top: 5px;
+    }
+
+    .loading {
+      text-align: center;
+      color: white;
+      font-size: 1.2rem;
+      padding: 40px;
+    }
+
+    .spinner {
+      border: 4px solid rgba(255, 255, 255, 0.3);
+      border-top: 4px solid white;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 20px;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .empty-state {
+      background: white;
+      padding: 60px;
+      border-radius: 16px;
+      text-align: center;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+    }
+
+    .empty-state h2 {
+      color: #495057;
+      margin-bottom: 10px;
+    }
+
+    .empty-state p {
+      color: #6c757d;
+    }
+
+    .refresh-btn {
+      position: fixed;
+      bottom: 30px;
+      right: 30px;
+      background: #667eea;
+      color: white;
+      border: none;
+      padding: 15px 25px;
+      border-radius: 50px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 4px 20px rgba(102, 126, 234, 0.4);
+      transition: all 0.3s;
+    }
+
+    .refresh-btn:hover {
+      background: #5568d3;
+      transform: scale(1.05);
+    }
+
+    .copy-btn {
+      background: #667eea;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      margin-top: 10px;
+      transition: background 0.2s;
+    }
+
+    .copy-btn:hover {
+      background: #5568d3;
+    }
+
+    .copy-btn:active {
+      background: #4558c2;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>📦 Visor de Pedidos</h1>
+      <p style="color: #6c757d; margin-top: 10px;">Recibe y visualiza pedidos en tiempo real</p>
+      <div class="webhook-url">
+        <strong>URL del Webhook:</strong><br>
+        <span id="webhookUrl">https://wfbdxxpegggmbvfoteml.supabase.co/functions/v1/receive-order</span>
+        <button class="copy-btn" onclick="copyWebhookUrl()">📋 Copiar URL</button>
+      </div>
+    </div>
+
+    <div id="ordersContainer"></div>
+  </div>
+
+  <button class="refresh-btn" onclick="loadOrders()">🔄 Actualizar</button>
+
+  <script>
+    const SUPABASE_URL = 'https://wfbdxxpegggmbvfoteml.supabase.co';
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndmYmR4eHBlZ2dnbWJ2Zm90ZW1sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc0OTgwMTQsImV4cCI6MjA3MzA3NDAxNH0.DjJNPiAz6O7Qhpvs8MKmj4uMs_6QXVSRtepfgc_a9y4';
+
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    async function loadOrders() {
+      const container = document.getElementById('ordersContainer');
+      container.innerHTML = '<div class="loading"><div class="spinner"></div>Cargando pedidos...</div>';
+
+      try {
+        const { data: orders, error } = await supabase
+          .from('orders')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        if (orders.length === 0) {
+          container.innerHTML = `
+            <div class="empty-state">
+              <h2>📭 No hay pedidos</h2>
+              <p>Los pedidos aparecerán aquí cuando se reciban en el webhook.</p>
+            </div>
+          `;
+          return;
+        }
+
+        container.innerHTML = `
+          <div class="orders-grid">
+            ${orders.map(order => `
+              <div class="order-card">
+                <div class="order-header">
+                  <div class="order-title">${order.client_company}</div>
+                  <div class="order-date">📅 ${order.event_date}</div>
+                </div>
+                <div class="order-info">
+                  <div class="info-row">
+                    <span class="info-label">📄 Archivo:</span>
+                    <span class="info-value">${order.file_name}</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">👤 Contacto:</span>
+                    <span class="info-value">${order.client_contact}</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">📍 Dirección:</span>
+                    <span class="info-value">${order.client_address}</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">📞 Teléfono:</span>
+                    <span class="info-value">${order.client_phone}</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">👥 Asistentes:</span>
+                    <span class="info-value">${order.number_of_attendees}</span>
+                  </div>
+                  <div class="info-row">
+                    <span class="info-label">💼 Comercial:</span>
+                    <span class="info-value">${order.sales_representative}</span>
+                  </div>
+                </div>
+                <div class="stats">
+                  <div class="stat">
+                    <div class="stat-value">${order.completion_status?.totalProducts || 0}</div>
+                    <div class="stat-label">Productos</div>
+                  </div>
+                  <div class="stat">
+                    <div class="stat-value">${order.completion_status?.totalTableware || 0}</div>
+                    <div class="stat-label">Menaje</div>
+                  </div>
+                </div>
+              </div>
+            `).join('')}
+          </div>
+        `;
+      } catch (error) {
+        console.error('Error loading orders:', error);
+        container.innerHTML = `
+          <div class="empty-state">
+            <h2>❌ Error al cargar pedidos</h2>
+            <p>${error.message}</p>
+          </div>
+        `;
+      }
+    }
+
+    function copyWebhookUrl() {
+      const url = document.getElementById('webhookUrl').textContent;
+      navigator.clipboard.writeText(url).then(() => {
+        const btn = event.target;
+        const originalText = btn.textContent;
+        btn.textContent = '✅ Copiado!';
+        setTimeout(() => {
+          btn.textContent = originalText;
+        }, 2000);
+      });
+    }
+
+    // Load orders on page load
+    loadOrders();
+
+    // Auto-refresh every 30 seconds
+    setInterval(loadOrders, 30000);
+  </script>
+</body>
+</html>
