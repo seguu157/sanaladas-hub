@@ -50,6 +50,7 @@ const AppContent: React.FC = () => {
   const [processingError, setProcessingError] = useState<string | undefined>();
   const [processingStartedAt, setProcessingStartedAt] = useState<number | null>(null);
   const [pendingNewOrderId, setPendingNewOrderId] = useState<string | null>(null);
+  const [trackedPendingPdfId, setTrackedPendingPdfId] = useState<string | null>(null);
 
   // Load user role
   useEffect(() => {
@@ -150,15 +151,17 @@ const AppContent: React.FC = () => {
     setProcessingStartedAt(Date.now());
     setProcessingStage('uploading');
     setCurrentPdfFile(file);
+    setTrackedPendingPdfId(null);
 
-    // Timer que avanza automáticamente de "sending" a "extracting" tras unos segundos.
-    // n8n no envía updates intermedios, así que usamos un avance estimado mientras
-    // el fetch sigue pendiente. El éxito real viene de la respuesta del webhook.
+    // Timer de seguridad: si n8n no actualiza el status (por ej. los nodos de
+    // checkpoint aún no están añadidos en el workflow), avanzamos manualmente
+    // de 'sending' a 'extracting' tras unos segundos para que el stepper no
+    // se quede congelado. El status real desde n8n siempre prevalece.
     let extractingTimer: ReturnType<typeof setTimeout> | null = null;
     const scheduleExtractingStage = () => {
       extractingTimer = setTimeout(() => {
         setProcessingStage((prev) => (prev === 'sending' ? 'extracting' : prev));
-      }, 6000);
+      }, 8000);
     };
     const clearExtractingTimer = () => {
       if (extractingTimer) {
@@ -167,6 +170,10 @@ const AppContent: React.FC = () => {
       }
     };
 
+    // Lo guardamos también fuera del state porque el catch necesita el id
+    // sin esperar a que el setter de React se aplique.
+    let createdPendingPdfId: string | null = null;
+
     try {
       if (!user) {
         setProcessingError('Debes iniciar sesión para subir archivos.');
@@ -174,7 +181,7 @@ const AppContent: React.FC = () => {
         return;
       }
 
-      // Etapa 1: Subir PDF a Supabase Storage + registrar en pending_pdfs
+      // Etapa 1: Subir PDF a Supabase Storage
       const { path, error: uploadError } = await uploadPDF(file, user.id);
       if (uploadError || !path) {
         setProcessingError('Error al subir el PDF: ' + (uploadError || 'Sin ruta'));
@@ -183,42 +190,53 @@ const AppContent: React.FC = () => {
       }
       console.log('✅ PDF subido a storage:', path);
 
-      const { error: insertError } = await supabase
+      // Registrar el PDF en pending_pdfs y capturar su id
+      const { data: pendingPdf, error: insertError } = await supabase
         .from('pending_pdfs')
         .insert({
           file_name: file.name,
           file_path: path,
           file_size: file.size,
           user_id: user.id,
-          processed: false
-        });
+          processed: false,
+          status: 'uploaded',
+        })
+        .select('id')
+        .single();
 
-      if (insertError) {
+      if (insertError || !pendingPdf?.id) {
         console.error('Error saving pending PDF:', insertError);
         setProcessingError('Error al registrar el PDF. Por favor, inténtalo de nuevo.');
         setProcessingStage('error');
         return;
       }
-      console.log('✅ PDF registrado en pending_pdfs:', file.name);
+      const pendingPdfId = pendingPdf.id as string;
+      createdPendingPdfId = pendingPdfId;
+      setTrackedPendingPdfId(pendingPdfId);
+      console.log('✅ PDF registrado en pending_pdfs:', pendingPdfId);
 
-      // Etapa 2: Enviar a n8n
+      // Etapa 2: Enviar a n8n (incluyendo el pendingPdfId para que pueda
+      // hacer callbacks a update-pdf-status durante el flujo).
       setProcessingStage('sending');
+      await supabase
+        .from('pending_pdfs')
+        .update({ status: 'sent_to_n8n' })
+        .eq('id', pendingPdfId);
+
       scheduleExtractingStage();
 
       const formData = new FormData();
       formData.append('file', file);
       formData.append('fileName', file.name);
+      formData.append('pendingPdfId', pendingPdfId);
       formData.append('timestamp', new Date().toISOString());
       formData.append('source', 'SANALADAS_HUB_PDF');
 
-      console.log('📤 Enviando PDF a N8N:', { fileName: file.name, fileSize: file.size });
+      console.log('📤 Enviando PDF a N8N:', { fileName: file.name, fileSize: file.size, pendingPdfId });
 
       const webhookUrl = 'https://sanaladas-n8n.lytrap.easypanel.host/webhook/pdf-upload';
       const response = await fetch(webhookUrl, { method: 'POST', body: formData });
       clearExtractingTimer();
-
-      // Etapa 3 → 4: el fetch ya regresó, n8n terminó de extraer y crear el pedido
-      setProcessingStage('creating');
 
       const responseText = await response.text();
       let result: any;
@@ -240,20 +258,28 @@ const AppContent: React.FC = () => {
       // Refrescamos para que la realtime + manual fetch traigan el pedido nuevo
       await refreshOrders(false);
 
-      // Si la edge function devolvió un orderId concreto lo memorizamos para
-      // navegar a él en cuanto exista en la lista de orders (puede tardar
-      // unos ms en propagarse vía realtime).
       const newOrderId: string | undefined = result?.orderId || result?.order_id;
       if (newOrderId) {
         setPendingNewOrderId(newOrderId);
       }
 
-      setProcessingStage('completed');
+      // No fijamos 'completed' aquí — la edge function receive-order ya marca
+      // status='completed' y la suscripción Realtime moverá el stepper al
+      // último paso. Si por algún motivo no llega, el efecto de fallback lo
+      // cierra tras unos segundos.
     } catch (err: any) {
       console.error('Error processing PDF with webhook:', err);
       clearExtractingTimer();
       setProcessingError(err?.message || 'Error desconocido procesando el PDF.');
       setProcessingStage('error');
+
+      // Best-effort: marcar el pending_pdf como 'failed' si tenemos su id
+      if (createdPendingPdfId) {
+        void supabase
+          .from('pending_pdfs')
+          .update({ status: 'failed', error_message: err?.message ?? 'unknown error' })
+          .eq('id', createdPendingPdfId);
+      }
     }
   }, [user, refreshOrders]);
 
@@ -263,6 +289,7 @@ const AppContent: React.FC = () => {
     setProcessingFileName(undefined);
     setProcessingStartedAt(null);
     setPendingNewOrderId(null);
+    setTrackedPendingPdfId(null);
   }, []);
 
   const handleRetryProcessing = useCallback(() => {
@@ -288,6 +315,69 @@ const AppContent: React.FC = () => {
     setActiveTab('upload');
   }, []);
 
+  // Suscripción Realtime al pending_pdf que estamos procesando. Cada vez que
+  // n8n llama a la edge function update-pdf-status, esta fila cambia y aquí
+  // mapeamos el status a la etapa del stepper para tener checkpoints reales.
+  useEffect(() => {
+    if (!trackedPendingPdfId) return;
+
+    const STATUS_TO_STAGE: Record<string, ProcessingStage> = {
+      uploaded: 'uploading',
+      sent_to_n8n: 'sending',
+      extracting_ai: 'extracting',
+      creating_order: 'creating',
+      completed: 'completed',
+      failed: 'error',
+    };
+
+    const applyStatus = (row: any) => {
+      if (!row) return;
+      const stage = STATUS_TO_STAGE[row.status as string];
+      if (!stage) return;
+      setProcessingStage((prev) => {
+        // No retroceder de etapas ya superadas (p.ej. si llega un evento viejo)
+        const order: ProcessingStage[] = [
+          'uploading', 'sending', 'extracting', 'creating', 'completed',
+        ];
+        if (stage === 'error') return 'error';
+        if (!prev || prev === 'error') return stage;
+        return order.indexOf(stage) >= order.indexOf(prev) ? stage : prev;
+      });
+      if (row.status === 'failed' && row.error_message) {
+        setProcessingError(row.error_message);
+      }
+    };
+
+    // Carga inicial por si el primer evento ya ocurrió antes de suscribirnos.
+    void supabase
+      .from('pending_pdfs')
+      .select('status, error_message')
+      .eq('id', trackedPendingPdfId)
+      .maybeSingle()
+      .then(({ data }) => applyStatus(data));
+
+    const channel = supabase
+      .channel(`pending_pdf_${trackedPendingPdfId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'pending_pdfs',
+          filter: `id=eq.${trackedPendingPdfId}`,
+        },
+        (payload) => {
+          console.log('🔔 pending_pdf realtime update:', payload.new);
+          applyStatus(payload.new);
+        },
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [trackedPendingPdfId]);
+
   // Cuando llega el pedido nuevo (vía realtime tras n8n), navegamos automáticamente
   // a su vista en cuanto aparece en la lista de orders.
   useEffect(() => {
@@ -304,6 +394,7 @@ const AppContent: React.FC = () => {
       setProcessingError(undefined);
       setProcessingFileName(undefined);
       setProcessingStartedAt(null);
+      setTrackedPendingPdfId(null);
     }, 1500);
 
     return () => clearTimeout(navigateTimer);
@@ -319,6 +410,7 @@ const AppContent: React.FC = () => {
       setProcessingError(undefined);
       setProcessingFileName(undefined);
       setProcessingStartedAt(null);
+      setTrackedPendingPdfId(null);
     }, 2000);
     return () => clearTimeout(t);
   }, [processingStage, pendingNewOrderId]);

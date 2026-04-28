@@ -135,13 +135,14 @@ Deno.serve(async (req: Request) => {
 
     const orderId = orderData.id;
 
-    // Marcar el PDF pendiente como procesado
+    // Marcar el PDF pendiente como procesado y completado
     if (pendingPdfId) {
       await supabase
         .from("pending_pdfs")
         .update({
           processed: true,
           order_id: orderId,
+          status: "completed",
         })
         .eq("id", pendingPdfId);
       console.log(`Marked pending PDF ${pendingPdfId} as processed for order ${orderId}`);
@@ -204,6 +205,7 @@ Deno.serve(async (req: Request) => {
       JSON.stringify({
         success: true,
         orderId,
+        pendingPdfId,
         message: "Order created successfully",
       }),
       {
