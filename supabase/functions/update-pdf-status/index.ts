@@ -10,6 +10,7 @@ const corsHeaders = {
 const ALLOWED_STATUSES = new Set([
   "uploaded",
   "sent_to_n8n",
+  "received_by_llamaindex",
   "extracting_ai",
   "creating_order",
   "completed",

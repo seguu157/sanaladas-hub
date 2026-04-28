@@ -153,17 +153,28 @@ const AppContent: React.FC = () => {
     setCurrentPdfFile(file);
     setTrackedPendingPdfId(null);
 
-    // Timer de seguridad: si n8n no actualiza el status (por ej. los nodos de
-    // checkpoint aún no están añadidos en el workflow), avanzamos manualmente
-    // de 'sending' a 'extracting' tras unos segundos para que el stepper no
-    // se quede congelado. El status real desde n8n siempre prevalece.
+    // Timers de seguridad: si n8n aún no tiene los nodos de checkpoint
+    // configurados, avanzamos visualmente el stepper para que no se quede
+    // congelado. Cualquier status real desde n8n vía Realtime sobrescribe
+    // estos avances estimados (la lógica anti-retroceso de la suscripción
+    // mantiene siempre la etapa más avanzada).
+    let receivedTimer: ReturnType<typeof setTimeout> | null = null;
     let extractingTimer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleExtractingStage = () => {
+    const scheduleFallbackStages = () => {
+      receivedTimer = setTimeout(() => {
+        setProcessingStage((prev) => (prev === 'sending' ? 'received_by_llamaindex' : prev));
+      }, 4000);
       extractingTimer = setTimeout(() => {
-        setProcessingStage((prev) => (prev === 'sending' ? 'extracting' : prev));
-      }, 8000);
+        setProcessingStage((prev) =>
+          prev === 'sending' || prev === 'received_by_llamaindex' ? 'extracting' : prev,
+        );
+      }, 10000);
     };
-    const clearExtractingTimer = () => {
+    const clearFallbackTimers = () => {
+      if (receivedTimer) {
+        clearTimeout(receivedTimer);
+        receivedTimer = null;
+      }
       if (extractingTimer) {
         clearTimeout(extractingTimer);
         extractingTimer = null;
@@ -223,7 +234,7 @@ const AppContent: React.FC = () => {
         .update({ status: 'sent_to_n8n' })
         .eq('id', pendingPdfId);
 
-      scheduleExtractingStage();
+      scheduleFallbackStages();
 
       const formData = new FormData();
       formData.append('file', file);
@@ -236,7 +247,7 @@ const AppContent: React.FC = () => {
 
       const webhookUrl = 'https://sanaladas-n8n.lytrap.easypanel.host/webhook/pdf-upload';
       const response = await fetch(webhookUrl, { method: 'POST', body: formData });
-      clearExtractingTimer();
+      clearFallbackTimers();
 
       const responseText = await response.text();
       let result: any;
@@ -269,7 +280,7 @@ const AppContent: React.FC = () => {
       // cierra tras unos segundos.
     } catch (err: any) {
       console.error('Error processing PDF with webhook:', err);
-      clearExtractingTimer();
+      clearFallbackTimers();
       setProcessingError(err?.message || 'Error desconocido procesando el PDF.');
       setProcessingStage('error');
 
@@ -324,6 +335,7 @@ const AppContent: React.FC = () => {
     const STATUS_TO_STAGE: Record<string, ProcessingStage> = {
       uploaded: 'uploading',
       sent_to_n8n: 'sending',
+      received_by_llamaindex: 'received_by_llamaindex',
       extracting_ai: 'extracting',
       creating_order: 'creating',
       completed: 'completed',
@@ -337,7 +349,12 @@ const AppContent: React.FC = () => {
       setProcessingStage((prev) => {
         // No retroceder de etapas ya superadas (p.ej. si llega un evento viejo)
         const order: ProcessingStage[] = [
-          'uploading', 'sending', 'extracting', 'creating', 'completed',
+          'uploading',
+          'sending',
+          'received_by_llamaindex',
+          'extracting',
+          'creating',
+          'completed',
         ];
         if (stage === 'error') return 'error';
         if (!prev || prev === 'error') return stage;

@@ -5,6 +5,7 @@ import {
   AlertCircle,
   FileText,
   Send,
+  Cloud,
   Brain,
   Database,
   Sparkles,
@@ -14,6 +15,7 @@ import {
 export type ProcessingStage =
   | 'uploading'
   | 'sending'
+  | 'received_by_llamaindex'
   | 'extracting'
   | 'creating'
   | 'completed'
@@ -40,6 +42,12 @@ const STEPS: Step[] = [
     icon: Send,
   },
   {
+    id: 'received_by_llamaindex',
+    label: 'PDF recibido por LlamaIndex',
+    description: 'Confirmado por la API de LlamaIndex (file_id devuelto)',
+    icon: Cloud,
+  },
+  {
     id: 'extracting',
     label: 'Extraer datos con IA',
     description: 'LlamaIndex está analizando el PDF (esto puede tardar 1-2 minutos)',
@@ -62,9 +70,10 @@ const STEPS: Step[] = [
 const STAGE_INDEX: Record<ProcessingStage, number> = {
   uploading: 0,
   sending: 1,
-  extracting: 2,
-  creating: 3,
-  completed: 4,
+  received_by_llamaindex: 2,
+  extracting: 3,
+  creating: 4,
+  completed: 5,
   error: -1,
 };
 
