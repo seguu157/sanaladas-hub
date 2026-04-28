@@ -15,6 +15,7 @@ import { uploadPDF, supabase } from './lib/supabase';
 import { withHangGuard } from './lib/supabaseHangGuard';
 import { FileText, List, Calendar as CalendarIcon, Clock, ChefHat, Bot, Activity, Package, ShoppingBag, Users } from 'lucide-react';
 import FileUploader from './components/FileUploader';
+import PdfProcessingProgress, { ProcessingStage } from './components/PdfProcessingProgress';
 import DataVisualizer from './components/DataVisualizer';
 import OrdersList from './components/OrdersList';
 import Calendar from './components/Calendar';
@@ -44,8 +45,11 @@ const AppContent: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentPdfFile, setCurrentPdfFile] = useState<File | null>(null);
-  const [isProcessingWebhook, setIsProcessingWebhook] = useState(false);
-  const [webhookProgress, setWebhookProgress] = useState<string>('');
+  const [processingStage, setProcessingStage] = useState<ProcessingStage | null>(null);
+  const [processingFileName, setProcessingFileName] = useState<string | undefined>();
+  const [processingError, setProcessingError] = useState<string | undefined>();
+  const [processingStartedAt, setProcessingStartedAt] = useState<number | null>(null);
+  const [pendingNewOrderId, setPendingNewOrderId] = useState<string | null>(null);
 
   // Load user role
   useEffect(() => {
@@ -140,27 +144,45 @@ const AppContent: React.FC = () => {
   }, [user]);
 
   const handleWebhookUpload = useCallback(async (file: File) => {
-    setIsLoading(true);
-    setIsProcessingWebhook(true);
     setError(null);
-    setWebhookProgress('Subiendo PDF a la base de datos...');
+    setProcessingError(undefined);
+    setProcessingFileName(file.name);
+    setProcessingStartedAt(Date.now());
+    setProcessingStage('uploading');
+    setCurrentPdfFile(file);
+
+    // Timer que avanza automáticamente de "sending" a "extracting" tras unos segundos.
+    // n8n no envía updates intermedios, así que usamos un avance estimado mientras
+    // el fetch sigue pendiente. El éxito real viene de la respuesta del webhook.
+    let extractingTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleExtractingStage = () => {
+      extractingTimer = setTimeout(() => {
+        setProcessingStage((prev) => (prev === 'sending' ? 'extracting' : prev));
+      }, 6000);
+    };
+    const clearExtractingTimer = () => {
+      if (extractingTimer) {
+        clearTimeout(extractingTimer);
+        extractingTimer = null;
+      }
+    };
 
     try {
       if (!user) {
-        setError('Debes iniciar sesión para subir archivos.');
+        setProcessingError('Debes iniciar sesión para subir archivos.');
+        setProcessingStage('error');
         return;
       }
 
-      // Paso 1: Subir PDF a Supabase Storage
+      // Etapa 1: Subir PDF a Supabase Storage + registrar en pending_pdfs
       const { path, error: uploadError } = await uploadPDF(file, user.id);
       if (uploadError || !path) {
-        setError('Error al subir el PDF: ' + (uploadError || 'Sin ruta'));
+        setProcessingError('Error al subir el PDF: ' + (uploadError || 'Sin ruta'));
+        setProcessingStage('error');
         return;
       }
-
       console.log('✅ PDF subido a storage:', path);
 
-      // Paso 2: Registrar el PDF en pending_pdfs
       const { error: insertError } = await supabase
         .from('pending_pdfs')
         .insert({
@@ -173,91 +195,83 @@ const AppContent: React.FC = () => {
 
       if (insertError) {
         console.error('Error saving pending PDF:', insertError);
-        setError('Error al registrar el PDF. Por favor, inténtalo de nuevo.');
+        setProcessingError('Error al registrar el PDF. Por favor, inténtalo de nuevo.');
+        setProcessingStage('error');
         return;
       }
-
       console.log('✅ PDF registrado en pending_pdfs:', file.name);
 
-      // Paso 3: Enviar el PDF a N8N para procesamiento
+      // Etapa 2: Enviar a n8n
+      setProcessingStage('sending');
+      scheduleExtractingStage();
+
       const formData = new FormData();
       formData.append('file', file);
       formData.append('fileName', file.name);
       formData.append('timestamp', new Date().toISOString());
       formData.append('source', 'SANALADAS_HUB_PDF');
 
-      console.log('📤 Enviando PDF a N8N:', {
-        fileName: file.name,
-        fileSize: file.size,
-        fileType: file.type
-      });
+      console.log('📤 Enviando PDF a N8N:', { fileName: file.name, fileSize: file.size });
 
-      setWebhookProgress('Procesando PDF con IA...');
-
-      // Conectar directamente a N8N (tiene CORS habilitado)
       const webhookUrl = 'https://sanaladas-n8n.lytrap.easypanel.host/webhook/pdf-upload';
+      const response = await fetch(webhookUrl, { method: 'POST', body: formData });
+      clearExtractingTimer();
 
-      const response = await fetch(webhookUrl, {
-        method: 'POST',
-        body: formData
-      });
-
-      console.log('📥 Respuesta de N8N:', response.status);
+      // Etapa 3 → 4: el fetch ya regresó, n8n terminó de extraer y crear el pedido
+      setProcessingStage('creating');
 
       const responseText = await response.text();
-      console.log('📥 Response completo:', responseText);
-
-      let result;
+      let result: any;
       try {
         result = JSON.parse(responseText);
-        console.log('✅ JSON parseado:', result);
-      } catch (e) {
-        console.error('❌ Error parseando JSON. Respuesta raw:', responseText);
-        throw new Error(`N8N no devolvió JSON válido. Respuesta: ${responseText.substring(0, 100)}`);
+      } catch {
+        throw new Error(`N8N no devolvió JSON válido. Respuesta: ${responseText.substring(0, 120)}`);
       }
 
       if (!response.ok) {
-        console.error('❌ Response no OK:', response.status, result);
-        throw new Error(result.details || result.error || `Error HTTP ${response.status}`);
+        throw new Error(result?.details || result?.error || `Error HTTP ${response.status}`);
+      }
+      if (result?.success === false) {
+        throw new Error(result?.details || result?.error || result?.message || 'Error procesando el pedido');
       }
 
-      if (result.success === false) {
-        console.error('❌ N8N devolvió success:false:', result);
-        throw new Error(result.details || result.error || result.message || 'Error procesando el pedido');
+      console.log('✅ Pedido creado por n8n:', result);
+
+      // Refrescamos para que la realtime + manual fetch traigan el pedido nuevo
+      await refreshOrders(false);
+
+      // Si la edge function devolvió un orderId concreto lo memorizamos para
+      // navegar a él en cuanto exista en la lista de orders (puede tardar
+      // unos ms en propagarse vía realtime).
+      const newOrderId: string | undefined = result?.orderId || result?.order_id;
+      if (newOrderId) {
+        setPendingNewOrderId(newOrderId);
       }
 
-      // PDF enviado correctamente - ahora esperamos el webhook
-      setWebhookProgress('✅ PDF enviado. Esperando procesamiento de IA (esto puede tomar 1-2 minutos)...');
-
-      // El pedido llegará via webhook a /api/receive-order y se asociará automáticamente con el PDF
-      const checkInterval = setInterval(async () => {
-        console.log('🔄 Verificando si llegó el pedido...');
-        await refreshOrders();
-      }, 5000);
-
-      // Detener después de 3 minutos
-      setTimeout(() => {
-        clearInterval(checkInterval);
-        setWebhookProgress('⏱️ Tiempo de espera agotado. Si el pedido no aparece, verifica los logs de N8N.');
-      }, 180000);
-
-      setTimeout(() => {
-        setIsProcessingWebhook(false);
-        setWebhookProgress('');
-      }, 2000);
-
+      setProcessingStage('completed');
     } catch (err: any) {
       console.error('Error processing PDF with webhook:', err);
-      setError(`Error procesando PDF: ${err.message}`);
-      setWebhookProgress('');
-    } finally {
-      setIsLoading(false);
-      setTimeout(() => {
-        setIsProcessingWebhook(false);
-        setWebhookProgress('');
-      }, 2000);
+      clearExtractingTimer();
+      setProcessingError(err?.message || 'Error desconocido procesando el PDF.');
+      setProcessingStage('error');
     }
   }, [user, refreshOrders]);
+
+  const handleCancelProcessing = useCallback(() => {
+    setProcessingStage(null);
+    setProcessingError(undefined);
+    setProcessingFileName(undefined);
+    setProcessingStartedAt(null);
+    setPendingNewOrderId(null);
+  }, []);
+
+  const handleRetryProcessing = useCallback(() => {
+    if (currentPdfFile) {
+      void handleWebhookUpload(currentPdfFile);
+    } else {
+      handleCancelProcessing();
+    }
+  }, [currentPdfFile, handleWebhookUpload, handleCancelProcessing]);
 
   const handleReset = useCallback(() => {
     setExtractedData(null);
@@ -273,6 +287,41 @@ const AppContent: React.FC = () => {
     setCurrentPdfFile(null);
     setActiveTab('upload');
   }, []);
+
+  // Cuando llega el pedido nuevo (vía realtime tras n8n), navegamos automáticamente
+  // a su vista en cuanto aparece en la lista de orders.
+  useEffect(() => {
+    if (!pendingNewOrderId) return;
+    const newOrder = orders.find((o) => o.id === pendingNewOrderId);
+    if (!newOrder) return;
+
+    const navigateTimer = setTimeout(() => {
+      setExtractedData(newOrder.data);
+      setCurrentOrderId(newOrder.id);
+      setActiveTab('upload');
+      setPendingNewOrderId(null);
+      setProcessingStage(null);
+      setProcessingError(undefined);
+      setProcessingFileName(undefined);
+      setProcessingStartedAt(null);
+    }, 1500);
+
+    return () => clearTimeout(navigateTimer);
+  }, [pendingNewOrderId, orders, setCurrentOrderId, setActiveTab]);
+
+  // Fallback: si la respuesta de n8n no trajo orderId pero el procesamiento se
+  // marcó como completado, cerramos el progreso tras unos segundos (la realtime
+  // ya habrá refrescado la lista de pedidos).
+  useEffect(() => {
+    if (processingStage !== 'completed' || pendingNewOrderId) return;
+    const t = setTimeout(() => {
+      setProcessingStage(null);
+      setProcessingError(undefined);
+      setProcessingFileName(undefined);
+      setProcessingStartedAt(null);
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [processingStage, pendingNewOrderId]);
 
   // Sincronizar extractedData cuando el pedido actual cambia en Realtime
   useEffect(() => {
@@ -665,11 +714,17 @@ const AppContent: React.FC = () => {
 
         {/* Upload Tab */}
         <div className={activeTab === 'upload' ? 'block' : 'hidden'}>
-          {isLoading || isProcessingWebhook ? (
-            <LoadingState
-              isWebhookProcessing={isProcessingWebhook}
-              progress={webhookProgress}
+          {processingStage ? (
+            <PdfProcessingProgress
+              currentStage={processingStage}
+              fileName={processingFileName}
+              errorMessage={processingError}
+              startedAt={processingStartedAt}
+              onRetry={handleRetryProcessing}
+              onCancel={handleCancelProcessing}
             />
+          ) : isLoading ? (
+            <LoadingState />
           ) : currentOrderId && !extractedData && ordersLoading ? (
             // Tras un reload tenemos currentOrderId restaurado de sessionStorage
             // pero los pedidos aún no han cargado. Mostramos loading en vez del
