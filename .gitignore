@@ -24,3 +24,6 @@ dist-ssr
 *.sw?
 .env
 docker-compose.yml
+
+# n8n workflow exports (contain API keys - don't commit)
+n8n-DASHBOARD-*.json
