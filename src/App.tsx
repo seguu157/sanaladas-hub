@@ -245,7 +245,9 @@ const AppContent: React.FC = () => {
 
       console.log('📤 Enviando PDF a N8N:', { fileName: file.name, fileSize: file.size, pendingPdfId });
 
-      const webhookUrl = 'https://sanaladas-n8n.lytrap.easypanel.host/webhook/pdf-upload';
+      const webhookUrl =
+        import.meta.env.VITE_N8N_WEBHOOK_URL ||
+        'https://sanaladas-n8n.lytrap.easypanel.host/webhook/pdf-upload';
       const response = await fetch(webhookUrl, { method: 'POST', body: formData });
       clearFallbackTimers();
 
